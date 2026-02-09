@@ -26,36 +26,101 @@ interface UseNavigationEngineReturn {
 
 // Simulated navigation data for demo purposes
 // In production, integrate with Google Maps Directions API or OpenRouteService
-const simulateRoute = (destination: string): Route => {
-  const steps: NavigationStep[] = [
-    { instruction: `Starting navigation to ${destination}`, distance: '', maneuver: 'start' },
-    { instruction: 'Walk straight for 50 meters', distance: '50m', maneuver: 'straight' },
-    { instruction: 'Turn left at the intersection', distance: '20m', maneuver: 'left' },
-    { instruction: 'Continue straight for 100 meters', distance: '100m', maneuver: 'straight' },
-    { instruction: 'Turn right onto the main road', distance: '30m', maneuver: 'right' },
-    { instruction: 'Walk straight for 200 meters', distance: '200m', maneuver: 'straight' },
-    { instruction: 'Your destination is on the left', distance: '10m', maneuver: 'destination' },
-    { instruction: `You have arrived at ${destination}`, distance: '', maneuver: 'arrive' },
+// API integration example:
+// - Google Maps Directions API: https://developers.google.com/maps/documentation/directions
+// - OpenRouteService: https://openrouteservice.org/dev/#/api-docs
+
+const getRandomDistance = (min: number, max: number): number => {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
+const generateRealisticSteps = (destination: string): NavigationStep[] => {
+  // Generate more realistic pedestrian navigation steps
+  const stepTemplates = [
+    { instruction: `Starting navigation to ${destination}. Walk forward.`, maneuver: 'start' },
+    { instruction: 'Continue straight along the sidewalk.', maneuver: 'straight' },
+    { instruction: 'Cross at the pedestrian crossing ahead.', maneuver: 'crossing' },
+    { instruction: 'Turn left at the intersection.', maneuver: 'left' },
+    { instruction: 'Walk straight for the next block.', maneuver: 'straight' },
+    { instruction: 'Slight right onto the walking path.', maneuver: 'slight-right' },
+    { instruction: 'Continue past the bus stop on your right.', maneuver: 'straight' },
+    { instruction: 'Turn right after the traffic signal.', maneuver: 'right' },
+    { instruction: 'Walk along the main road.', maneuver: 'straight' },
+    { instruction: 'Your destination is approaching on the left.', maneuver: 'arriving' },
+    { instruction: `You have arrived at ${destination}. The entrance is ahead.`, maneuver: 'arrive' },
   ];
+
+  return stepTemplates.map((template, index) => ({
+    instruction: template.instruction,
+    distance: index === 0 || index === stepTemplates.length - 1 
+      ? '' 
+      : `${getRandomDistance(20, 150)} meters`,
+    maneuver: template.maneuver,
+  }));
+};
+
+const simulateRoute = (destination: string): Route => {
+  const steps = generateRealisticSteps(destination);
+  const totalMeters = steps.reduce((acc, step) => {
+    const match = step.distance.match(/(\d+)/);
+    return acc + (match ? parseInt(match[1]) : 0);
+  }, 0);
+
+  const walkingSpeedMpm = 80; // meters per minute (average walking speed)
+  const totalMinutes = Math.ceil(totalMeters / walkingSpeedMpm);
 
   return {
     steps,
-    totalDistance: '410 meters',
-    totalDuration: '5 minutes',
+    totalDistance: totalMeters > 1000 
+      ? `${(totalMeters / 1000).toFixed(1)} kilometers` 
+      : `${totalMeters} meters`,
+    totalDuration: totalMinutes > 1 
+      ? `${totalMinutes} minutes` 
+      : 'less than a minute',
     destination,
   };
 };
 
 const simulateNearbySearch = (type: string): { name: string; distance: string } => {
-  const places: Record<string, { name: string; distance: string }> = {
-    hospital: { name: 'City General Hospital', distance: '800 meters' },
-    medical: { name: 'MedPlus Pharmacy', distance: '200 meters' },
-    pharmacy: { name: 'Apollo Pharmacy', distance: '150 meters' },
-    clinic: { name: 'Health First Clinic', distance: '350 meters' },
+  const places: Record<string, { name: string; distance: string }[]> = {
+    hospital: [
+      { name: 'City General Hospital', distance: '800 meters' },
+      { name: 'District Medical Center', distance: '1.2 kilometers' },
+    ],
+    medical: [
+      { name: 'MedPlus Healthcare', distance: '200 meters' },
+      { name: 'Family Medical Store', distance: '350 meters' },
+    ],
+    pharmacy: [
+      { name: 'Apollo Pharmacy', distance: '150 meters' },
+      { name: 'MedPlus Pharmacy', distance: '280 meters' },
+    ],
+    clinic: [
+      { name: 'Health First Clinic', distance: '350 meters' },
+      { name: 'Community Health Center', distance: '500 meters' },
+    ],
+    doctor: [
+      { name: 'Dr. Sharma Clinic', distance: '400 meters' },
+      { name: 'Family Care Doctors', distance: '600 meters' },
+    ],
+    restaurant: [
+      { name: 'City Cafe', distance: '100 meters' },
+      { name: 'Food Plaza', distance: '250 meters' },
+    ],
+    atm: [
+      { name: 'State Bank ATM', distance: '80 meters' },
+      { name: 'HDFC Bank ATM', distance: '200 meters' },
+    ],
+    bank: [
+      { name: 'State Bank Branch', distance: '300 meters' },
+      { name: 'ICICI Bank', distance: '450 meters' },
+    ],
   };
 
   const key = Object.keys(places).find(k => type.toLowerCase().includes(k)) || 'hospital';
-  return places[key];
+  const options = places[key] || places.hospital;
+  // Return the closest option
+  return options[0];
 };
 
 export function useNavigationEngine(): UseNavigationEngineReturn {
