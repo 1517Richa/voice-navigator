@@ -86,16 +86,20 @@ export function StatusDisplay({ status, message, className }: StatusDisplayProps
   return (
     <div
       role="status"
-      aria-live="polite"
+      aria-live="assertive"
       aria-atomic="true"
+      aria-label={`Current status: ${config.label}${message ? `. ${message}` : ''}`}
       className={cn(
-        'flex flex-col items-center gap-4 p-6 rounded-2xl',
+        'flex flex-col items-center gap-4 p-6 rounded-2xl w-full',
         'bg-card border border-border',
         'animate-fade-in',
         className
       )}
     >
-      <div className={cn('flex items-center justify-center', config.color)}>
+      <div 
+        className={cn('flex items-center justify-center', config.color)}
+        aria-hidden="true"
+      >
         {config.icon}
       </div>
       
@@ -109,6 +113,11 @@ export function StatusDisplay({ status, message, className }: StatusDisplayProps
             {message}
           </p>
         )}
+      </div>
+
+      {/* Hidden announcement for screen readers */}
+      <div className="sr-only" aria-live="polite">
+        {config.label}. {message || ''}
       </div>
     </div>
   );

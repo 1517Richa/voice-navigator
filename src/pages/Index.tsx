@@ -1,276 +1,175 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
-import { useGeolocation } from '@/hooks/useGeolocation';
-import { useNavigationEngine, type Route } from '@/hooks/useNavigationEngine';
+import { useVoiceNavigation } from '@/hooks/useVoiceNavigation';
 import { VoiceButton } from '@/components/VoiceButton';
-import { StatusDisplay, type AppStatus } from '@/components/StatusDisplay';
+import { StatusDisplay } from '@/components/StatusDisplay';
 import { NavigationInstruction } from '@/components/NavigationInstruction';
 import { ObstacleAlert } from '@/components/ObstacleAlert';
-
-type NavigationPhase = 
-  | 'init'
-  | 'location'
-  | 'destination'
-  | 'route'
-  | 'navigate'
-  | 'arrived';
+import { CameraPreview } from '@/components/CameraPreview';
+import { MissionStatement } from '@/components/MissionStatement';
+import { FutureScope } from '@/components/FutureScope';
+import { useRef } from 'react';
+import { useObstacleDetection } from '@/hooks/useObstacleDetection';
 
 const Index = () => {
-  const [phase, setPhase] = useState<NavigationPhase>('init');
-  const [appStatus, setAppStatus] = useState<AppStatus>('initializing');
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [showObstacle, setShowObstacle] = useState(false);
-  const [obstacleDirection, setObstacleDirection] = useState<'left' | 'right' | 'center'>('center');
-  const [currentRoute, setCurrentRoute] = useState<Route | null>(null);
-  const [navigationStepIndex, setNavigationStepIndex] = useState(0);
+  const [state, actions] = useVoiceNavigation();
+  const { videoRef } = useObstacleDetection();
   
-  const hasInitialized = useRef(false);
-  const navigationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const {
+    phase,
+    statusMessage,
+    currentRoute,
+    currentStepIndex,
+    transcript,
+    isListening,
+    isSpeaking,
+    obstacleAlert,
+    isCameraActive,
+    error,
+  } = state;
 
-  const { speak, isSpeaking, isSupported: ttsSupported } = useSpeechSynthesis();
-  const { 
-    startListening, 
-    stopListening, 
-    transcript, 
-    isListening, 
-    isSupported: sttSupported,
-    resetTranscript 
-  } = useSpeechRecognition();
-  const { latitude, longitude, getCurrentPosition } = useGeolocation();
-  const { calculateRoute, searchNearby } = useNavigationEngine();
+  const {
+    startNewTrip,
+    stopNavigation,
+    startListening,
+    stopListening,
+    toggleCamera,
+    repeatCurrentInstruction,
+  } = actions;
 
-  // Announce message with speech
-  const announce = useCallback(async (message: string) => {
-    if (ttsSupported) {
-      await speak(message);
+  // Map phase to status display
+  const getAppStatus = () => {
+    switch (phase) {
+      case 'init':
+      case 'fetching-location':
+        return 'fetching-location';
+      case 'awaiting-destination':
+        return isListening ? 'listening' : 'awaiting-destination';
+      case 'processing':
+      case 'calculating-route':
+        return 'calculating-route';
+      case 'navigating':
+        return obstacleAlert ? 'obstacle-detected' : 'navigating';
+      case 'arrived':
+        return 'arrived';
+      case 'error':
+        return 'error';
+      default:
+        return 'initializing';
     }
-  }, [speak, ttsSupported]);
-
-  // Check if destination is a nearby search
-  const isNearbySearch = useCallback((text: string): boolean => {
-    const nearbyKeywords = ['nearest', 'nearby', 'close', 'closest'];
-    const placeTypes = ['hospital', 'medical', 'pharmacy', 'clinic', 'doctor', 'store'];
-    const lowerText = text.toLowerCase();
-    
-    return nearbyKeywords.some(k => lowerText.includes(k)) ||
-           placeTypes.some(p => lowerText.includes(p));
-  }, []);
-
-  // Process destination
-  const processDestination = useCallback(async (destination: string) => {
-    if (!latitude || !longitude) return;
-
-    setPhase('route');
-    setAppStatus('calculating-route');
-    
-    let targetDestination = destination;
-
-    // Check for nearby search
-    if (isNearbySearch(destination)) {
-      await announce(`Searching for ${destination}`);
-      const nearby = await searchNearby({ lat: latitude, lng: longitude }, destination);
-      targetDestination = nearby.name;
-      await announce(`Found ${nearby.name}, ${nearby.distance} away. Starting navigation.`);
-    } else {
-      await announce(`Calculating route to ${destination}`);
-    }
-
-    try {
-      const route = await calculateRoute(
-        { lat: latitude, lng: longitude },
-        targetDestination
-      );
-      
-      setCurrentRoute(route);
-      setNavigationStepIndex(0);
-      
-      await announce(
-        `Route calculated. Total distance: ${route.totalDistance}. ` +
-        `Estimated time: ${route.totalDuration}. Starting navigation now.`
-      );
-
-      setPhase('navigate');
-      setAppStatus('navigating');
-      startNavigation(route);
-    } catch (error) {
-      setAppStatus('error');
-      await announce('Unable to calculate route. Please try again.');
-      setPhase('destination');
-    }
-  }, [latitude, longitude, announce, calculateRoute, searchNearby, isNearbySearch]);
-
-  // Start navigation with voice instructions
-  const startNavigation = useCallback((route: Route) => {
-    let stepIndex = 0;
-
-    const announceStep = async () => {
-      if (stepIndex < route.steps.length) {
-        const step = route.steps[stepIndex];
-        setNavigationStepIndex(stepIndex);
-        setStatusMessage(step.instruction);
-        
-        await announce(step.instruction);
-        
-        // Simulate obstacle detection randomly (10% chance)
-        if (Math.random() < 0.1 && stepIndex > 0 && stepIndex < route.steps.length - 1) {
-          const directions: ('left' | 'right' | 'center')[] = ['left', 'right', 'center'];
-          const randomDirection = directions[Math.floor(Math.random() * directions.length)];
-          setObstacleDirection(randomDirection);
-          setShowObstacle(true);
-          setAppStatus('obstacle-detected');
-          
-          await announce(
-            randomDirection === 'center' 
-              ? 'Obstacle directly ahead. Please stop and reassess.'
-              : `Obstacle detected. Move slightly to the ${randomDirection === 'left' ? 'right' : 'left'}.`
-          );
-          
-          setTimeout(() => {
-            setShowObstacle(false);
-            setAppStatus('navigating');
-          }, 3000);
-        }
-
-        stepIndex++;
-
-        if (stepIndex >= route.steps.length) {
-          setPhase('arrived');
-          setAppStatus('arrived');
-          if (navigationIntervalRef.current) {
-            clearInterval(navigationIntervalRef.current);
-          }
-        }
-      }
-    };
-
-    // Announce first step immediately
-    announceStep();
-
-    // Continue with remaining steps every 5 seconds (simulated)
-    navigationIntervalRef.current = setInterval(announceStep, 6000);
-  }, [announce]);
-
-  // Initialize app on load
-  useEffect(() => {
-    if (hasInitialized.current) return;
-    hasInitialized.current = true;
-
-    const init = async () => {
-      // Wait a moment for voices to load
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      await announce('App opened. Fetching your current location.');
-      setPhase('location');
-      setAppStatus('fetching-location');
-
-      try {
-        await getCurrentPosition();
-        setAppStatus('awaiting-destination');
-        await announce('Location detected. Please tell your destination.');
-        setPhase('destination');
-        
-        // Auto-start listening after announcement
-        setTimeout(() => {
-          if (sttSupported) {
-            startListening();
-          }
-        }, 1500);
-      } catch (error) {
-        setAppStatus('error');
-        setStatusMessage('Could not get location. Please enable location services.');
-        await announce('Could not get your location. Please enable location services and refresh.');
-      }
-    };
-
-    init();
-
-    return () => {
-      if (navigationIntervalRef.current) {
-        clearInterval(navigationIntervalRef.current);
-      }
-    };
-  }, [announce, getCurrentPosition, sttSupported, startListening]);
-
-  // Handle transcript changes
-  useEffect(() => {
-    if (transcript && !isListening && phase === 'destination') {
-      processDestination(transcript);
-      resetTranscript();
-    }
-  }, [transcript, isListening, phase, processDestination, resetTranscript]);
+  };
 
   // Handle mic button click
   const handleMicClick = () => {
     if (isListening) {
       stopListening();
-    } else if (phase === 'destination' || phase === 'arrived') {
-      setAppStatus('listening');
+    } else if (phase === 'awaiting-destination' || phase === 'arrived') {
       startListening();
     }
   };
 
-  // Restart navigation
-  const handleRestart = async () => {
-    if (navigationIntervalRef.current) {
-      clearInterval(navigationIntervalRef.current);
-    }
-    setCurrentRoute(null);
-    setNavigationStepIndex(0);
-    setPhase('destination');
-    setAppStatus('awaiting-destination');
-    await announce('Ready for new destination. Please speak your destination.');
-    setTimeout(() => startListening(), 1500);
+  // Determine obstacle direction from alert
+  const getObstacleDirection = (): 'left' | 'right' | 'center' => {
+    if (!obstacleAlert) return 'center';
+    if (obstacleAlert.includes('right')) return 'left';
+    if (obstacleAlert.includes('left')) return 'right';
+    return 'center';
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
-      {/* Obstacle Alert */}
-      {showObstacle && <ObstacleAlert direction={obstacleDirection} />}
+    <div 
+      className="min-h-screen bg-background flex flex-col p-4 pb-20"
+      role="application"
+      aria-label="Voice Navigation Assistant - AI-powered navigation for visually impaired users"
+    >
+      {/* Obstacle Alert - highest priority */}
+      {obstacleAlert && (
+        <ObstacleAlert direction={getObstacleDirection()} />
+      )}
+
+      {/* Skip to main content for screen readers */}
+      <a 
+        href="#main-content" 
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:p-4 focus:bg-primary focus:text-primary-foreground focus:rounded-lg"
+      >
+        Skip to main content
+      </a>
 
       {/* Main Content */}
-      <main className="flex flex-col items-center gap-8 w-full max-w-md">
-        {/* App Title - minimal for screen readers */}
-        <h1 className="sr-only">Voice Navigation Assistant</h1>
+      <main 
+        id="main-content"
+        className="flex flex-col items-center gap-6 w-full max-w-md mx-auto"
+      >
+        {/* Mission Statement - Only on init/awaiting */}
+        {(phase === 'init' || phase === 'awaiting-destination' || phase === 'error') && (
+          <MissionStatement />
+        )}
 
         {/* Navigation Instruction during active navigation */}
-        {phase === 'navigate' && currentRoute && (
-          <NavigationInstruction
-            instruction={currentRoute.steps[navigationStepIndex]?.instruction || ''}
-            stepNumber={navigationStepIndex + 1}
-            totalSteps={currentRoute.steps.length}
-            distance={currentRoute.steps[navigationStepIndex]?.distance}
-          />
+        {phase === 'navigating' && currentRoute && (
+          <>
+            <NavigationInstruction
+              instruction={currentRoute.steps[currentStepIndex]?.instruction || ''}
+              stepNumber={currentStepIndex + 1}
+              totalSteps={currentRoute.steps.length}
+              distance={currentRoute.steps[currentStepIndex]?.distance}
+            />
+
+            {/* Camera Preview for obstacle detection */}
+            <CameraPreview
+              ref={videoRef}
+              isActive={isCameraActive}
+              onToggle={toggleCamera}
+              className="w-full h-48"
+            />
+
+            {/* Repeat instruction button */}
+            <button
+              onClick={repeatCurrentInstruction}
+              className="px-6 py-3 bg-secondary text-secondary-foreground rounded-xl text-lg font-medium hover:bg-secondary/80 transition-colors focus:outline-none focus:ring-4 focus:ring-secondary/50"
+              aria-label="Repeat current navigation instruction"
+            >
+              Repeat Instruction
+            </button>
+          </>
         )}
 
         {/* Status Display */}
-        {phase !== 'navigate' && (
+        {phase !== 'navigating' && (
           <StatusDisplay
-            status={appStatus}
-            message={statusMessage || (transcript && isListening ? transcript : undefined)}
+            status={getAppStatus()}
+            message={statusMessage || error || (transcript && isListening ? transcript : undefined)}
           />
         )}
 
         {/* Live transcript display when listening */}
         {isListening && transcript && (
           <div 
-            className="text-xl text-primary text-center p-4 bg-card rounded-xl border border-border animate-fade-in"
+            className="text-xl text-primary text-center p-4 bg-card rounded-xl border border-border animate-fade-in w-full"
+            role="status"
             aria-live="polite"
+            aria-atomic="true"
           >
+            <span className="sr-only">You said: </span>
             "{transcript}"
           </div>
         )}
 
         {/* Voice Button - Primary Interaction */}
-        {(phase === 'destination' || phase === 'arrived') && (
+        {(phase === 'awaiting-destination' || phase === 'arrived' || phase === 'error') && (
           <div className="flex flex-col items-center gap-4">
             <VoiceButton
               isListening={isListening}
               onClick={handleMicClick}
               disabled={isSpeaking}
             />
-            <p className="text-muted-foreground text-center">
-              {isListening ? 'Listening... Speak now' : 'Tap to speak destination'}
+            <p 
+              className="text-muted-foreground text-center"
+              aria-live="polite"
+            >
+              {isListening 
+                ? 'Listening... Speak your destination now' 
+                : isSpeaking 
+                  ? 'Please wait...' 
+                  : 'Tap to speak destination'}
             </p>
           </div>
         )}
@@ -278,27 +177,38 @@ const Index = () => {
         {/* Arrived state with restart option */}
         {phase === 'arrived' && (
           <button
-            onClick={handleRestart}
+            onClick={startNewTrip}
             className="mt-4 px-8 py-4 bg-primary text-primary-foreground rounded-xl text-xl font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-4 focus:ring-primary/50"
+            aria-label="Start a new navigation trip"
           >
             Start New Trip
           </button>
         )}
 
         {/* Stop navigation button */}
-        {phase === 'navigate' && (
+        {phase === 'navigating' && (
           <button
-            onClick={handleRestart}
+            onClick={stopNavigation}
             className="mt-4 px-8 py-4 bg-destructive text-destructive-foreground rounded-xl text-xl font-semibold hover:opacity-90 transition-opacity focus:outline-none focus:ring-4 focus:ring-destructive/50"
+            aria-label="Stop current navigation"
           >
             Stop Navigation
           </button>
         )}
+
+        {/* Future Scope - Show on idle states */}
+        {(phase === 'awaiting-destination' || phase === 'arrived') && (
+          <FutureScope className="mt-4" />
+        )}
       </main>
 
-      {/* Footer - Project info for developers */}
-      <footer className="fixed bottom-4 left-4 right-4 text-center text-sm text-muted-foreground">
-        <p>Voice Navigation • AI-Powered Accessibility</p>
+      {/* Footer */}
+      <footer 
+        className="fixed bottom-0 left-0 right-0 p-4 text-center text-sm text-muted-foreground bg-background/80 backdrop-blur-sm border-t border-border"
+        role="contentinfo"
+      >
+        <p>Voice Navigation Assistant • AI-Powered Accessibility</p>
+        <p className="text-xs mt-1">Prototype for Academic Evaluation</p>
       </footer>
     </div>
   );

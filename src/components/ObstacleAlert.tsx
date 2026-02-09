@@ -17,6 +17,8 @@ export function ObstacleAlert({ direction, className }: ObstacleAlertProps) {
     <div
       role="alert"
       aria-live="assertive"
+      aria-atomic="true"
+      aria-label={`Warning! ${directionMessages[direction]}`}
       className={cn(
         'fixed top-4 left-4 right-4 z-50',
         'flex items-center gap-4 p-6 rounded-2xl',
@@ -25,13 +27,21 @@ export function ObstacleAlert({ direction, className }: ObstacleAlertProps) {
         className
       )}
     >
-      <AlertTriangle className="w-10 h-10 text-destructive flex-shrink-0" />
+      <AlertTriangle 
+        className="w-10 h-10 text-destructive flex-shrink-0" 
+        aria-hidden="true"
+      />
       
       <div className="flex-1">
         <h3 className="text-xl font-bold text-destructive">Warning!</h3>
         <p className="text-lg text-foreground">
           {directionMessages[direction]}
         </p>
+      </div>
+
+      {/* Screen reader priority announcement */}
+      <div className="sr-only" aria-live="assertive" role="alert">
+        Urgent: {directionMessages[direction]}
       </div>
     </div>
   );
