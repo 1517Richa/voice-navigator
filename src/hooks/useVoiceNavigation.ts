@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useSpeechSynthesis } from './useSpeechSynthesis';
 import { useSpeechRecognition } from './useSpeechRecognition';
-import { useGeolocation } from './useGeolocation';
-import { useNavigationEngine, type Route, type NavigationStep } from './useNavigationEngine';
+import { useGeolocation, haversineDistance } from './useGeolocation';
+import { useNavigationEngine, type Route, type NavigationStep, formatDistance, formatDuration } from './useNavigationEngine';
 import { useObstacleDetection, getObstacleAlert } from './useObstacleDetection';
 
 export type NavigationPhase = 
@@ -27,6 +27,9 @@ export interface VoiceNavigationState {
   obstacleAlert: string | null;
   isCameraActive: boolean;
   error: string | null;
+  userLat: number | null;
+  userLng: number | null;
+  speed: number | null;
 }
 
 export interface VoiceNavigationActions {
@@ -38,6 +41,12 @@ export interface VoiceNavigationActions {
   repeatCurrentInstruction: () => Promise<void>;
 }
 
+// Thresholds
+const STEP_ARRIVAL_THRESHOLD = 15; // meters to consider "arrived" at a step
+const OFF_ROUTE_THRESHOLD = 40; // meters to trigger recalculation
+const MIN_MOVEMENT_THRESHOLD = 3; // meters - ignore tiny GPS jitter
+const STATIONARY_SPEED = 0.3; // m/s below this = stationary
+
 export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActions] {
   const [phase, setPhase] = useState<NavigationPhase>('init');
   const [statusMessage, setStatusMessage] = useState('');
@@ -47,30 +56,27 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
   const [error, setError] = useState<string | null>(null);
 
   const hasInitialized = useRef(false);
-  const navigationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stepIndexRef = useRef(0);
+  const lastAnnouncedStepRef = useRef(-1);
+  const routeRef = useRef<Route | null>(null);
+  const isRecalculating = useRef(false);
+  const prevNavPosRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Core hooks
   const { speak, stop: stopSpeaking, isSpeaking, isSupported: ttsSupported } = useSpeechSynthesis();
   const { 
-    startListening, 
-    stopListening, 
-    transcript, 
-    isListening, 
-    isSupported: sttSupported,
-    resetTranscript 
+    startListening, stopListening, transcript, isListening, 
+    isSupported: sttSupported, resetTranscript 
   } = useSpeechRecognition();
-  const { latitude, longitude, getCurrentPosition, error: geoError } = useGeolocation();
+  const { 
+    latitude, longitude, speed, getCurrentPosition, 
+    watchPosition, clearWatch 
+  } = useGeolocation();
   const { calculateRoute, searchNearby } = useNavigationEngine();
   const { 
-    currentObstacle, 
-    startDetection, 
-    stopDetection, 
-    isCameraActive,
-    videoRef 
+    currentObstacle, startDetection, stopDetection, isCameraActive, videoRef 
   } = useObstacleDetection();
 
-  // Announce message with speech
   const announce = useCallback(async (message: string, options?: { rate?: number }) => {
     if (ttsSupported) {
       setStatusMessage(message);
@@ -78,55 +84,99 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
     }
   }, [speak, ttsSupported]);
 
-  // Check if destination is a nearby search
   const isNearbySearch = useCallback((text: string): boolean => {
     const nearbyKeywords = ['nearest', 'nearby', 'close', 'closest', 'find'];
     const placeTypes = ['hospital', 'medical', 'pharmacy', 'clinic', 'doctor', 'store', 'restaurant', 'atm', 'bank'];
     const lowerText = text.toLowerCase();
-    
     return nearbyKeywords.some(k => lowerText.includes(k)) ||
            placeTypes.some(p => lowerText.includes(p));
   }, []);
 
-  // Start navigation with continuous voice instructions
-  const startNavigationSequence = useCallback(async (route: Route) => {
-    setPhase('navigating');
-    stepIndexRef.current = 0;
-    setCurrentStepIndex(0);
+  // Movement-based step advancement
+  useEffect(() => {
+    if (phase !== 'navigating' || !latitude || !longitude || !routeRef.current) return;
+    if (isRecalculating.current) return;
 
-    // Start camera detection
-    try {
-      await startDetection();
-    } catch (e) {
-      console.log('Camera not available, continuing without obstacle detection');
+    const route = routeRef.current;
+    const idx = stepIndexRef.current;
+
+    // Check if user is stationary - stay silent
+    const isStationary = speed !== null && speed < STATIONARY_SPEED;
+
+    // Check movement since last nav check
+    if (prevNavPosRef.current) {
+      const moved = haversineDistance(
+        prevNavPosRef.current.lat, prevNavPosRef.current.lng,
+        latitude, longitude
+      );
+      if (moved < MIN_MOVEMENT_THRESHOLD) return; // GPS jitter, skip
     }
+    prevNavPosRef.current = { lat: latitude, lng: longitude };
 
-    const announceStep = async () => {
-      if (stepIndexRef.current < route.steps.length) {
-        const step = route.steps[stepIndexRef.current];
-        setCurrentStepIndex(stepIndexRef.current);
-        
-        await announce(step.instruction);
-        
-        stepIndexRef.current++;
+    if (isStationary) return; // Don't process if standing still
 
-        if (stepIndexRef.current >= route.steps.length) {
+    // Check if arrived at current step endpoint
+    if (idx < route.steps.length) {
+      const stepEnd = route.steps[idx].endLocation;
+      const distToStep = haversineDistance(latitude, longitude, stepEnd.lat, stepEnd.lng);
+
+      if (distToStep < STEP_ARRIVAL_THRESHOLD) {
+        // Advance to next step
+        const nextIdx = idx + 1;
+        stepIndexRef.current = nextIdx;
+        setCurrentStepIndex(nextIdx);
+
+        if (nextIdx >= route.steps.length) {
+          // Arrived
           setPhase('arrived');
+          clearWatch();
           stopDetection();
-          if (navigationIntervalRef.current) {
-            clearInterval(navigationIntervalRef.current);
-          }
-          await announce('You have arrived at your destination. Tap the screen to start a new trip.');
+          announce('You have arrived at your destination.');
+          return;
+        }
+
+        // Announce next step only if not already announced
+        if (lastAnnouncedStepRef.current !== nextIdx) {
+          lastAnnouncedStepRef.current = nextIdx;
+          announce(route.steps[nextIdx].instruction);
+        }
+        return;
+      }
+
+      // Check if off route
+      // Find minimum distance to any point on the route geometry
+      let minDistToRoute = Infinity;
+      if (route.geometry?.coordinates) {
+        for (const [lng, lat] of route.geometry.coordinates) {
+          const d = haversineDistance(latitude, longitude, lat, lng);
+          if (d < minDistToRoute) minDistToRoute = d;
         }
       }
-    };
 
-    // Announce first step immediately
-    await announceStep();
-
-    // Continue with remaining steps every 6 seconds (simulated walking pace)
-    navigationIntervalRef.current = setInterval(announceStep, 6000);
-  }, [announce, startDetection, stopDetection]);
+      if (minDistToRoute > OFF_ROUTE_THRESHOLD && !isRecalculating.current) {
+        isRecalculating.current = true;
+        stopSpeaking();
+        announce('You are off route. Recalculating.').then(async () => {
+          try {
+            const newRoute = await calculateRoute(
+              { lat: latitude, lng: longitude },
+              route.destination
+            );
+            routeRef.current = newRoute;
+            setCurrentRoute(newRoute);
+            stepIndexRef.current = 0;
+            setCurrentStepIndex(0);
+            lastAnnouncedStepRef.current = 0;
+            announce(newRoute.steps[0].instruction);
+          } catch {
+            announce('Unable to recalculate route.');
+          } finally {
+            isRecalculating.current = false;
+          }
+        });
+      }
+    }
+  }, [latitude, longitude, speed, phase, announce, calculateRoute, clearWatch, stopDetection, stopSpeaking]);
 
   // Process destination and start navigation
   const processDestination = useCallback(async (destination: string) => {
@@ -138,14 +188,13 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
     setPhase('calculating-route');
     let targetDestination = destination;
 
-    // Check for nearby search
     if (isNearbySearch(destination)) {
       await announce(`Searching for ${destination}`);
       try {
         const nearby = await searchNearby({ lat: latitude, lng: longitude }, destination);
         targetDestination = nearby.name;
-        await announce(`Found ${nearby.name}, ${nearby.distance} away.`);
-      } catch (e) {
+        await announce(`Found ${nearby.name}.`);
+      } catch {
         await announce('Could not find nearby locations. Please try again.');
         setPhase('awaiting-destination');
         setTimeout(() => startListening(), 1500);
@@ -161,31 +210,42 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
         targetDestination
       );
       
+      routeRef.current = route;
       setCurrentRoute(route);
-      
-      // Announce route summary
+      stepIndexRef.current = 0;
+      setCurrentStepIndex(0);
+      lastAnnouncedStepRef.current = 0;
+
       await announce(
-        `Route ready. Total distance: ${route.totalDistance}. ` +
-        `Estimated walking time: ${route.totalDuration}. Starting navigation now.`,
+        `Route ready. Total distance: ${formatDistance(route.totalDistance)}. ` +
+        `Estimated walking time: ${formatDuration(route.totalDuration)}. Starting navigation now.`,
         { rate: 0.85 }
       );
 
-      await startNavigationSequence(route);
-    } catch (e) {
+      // Start navigation
+      setPhase('navigating');
+      watchPosition(); // Start real-time GPS tracking
+
+      try { await startDetection(); } catch { /* camera optional */ }
+
+      // Announce first step
+      if (route.steps.length > 0) {
+        await announce(route.steps[0].instruction);
+      }
+    } catch {
       setError('Unable to calculate route');
       await announce('Unable to calculate route. Please try again.');
       setPhase('awaiting-destination');
       setTimeout(() => startListening(), 1500);
     }
-  }, [latitude, longitude, announce, calculateRoute, searchNearby, isNearbySearch, startListening, startNavigationSequence]);
+  }, [latitude, longitude, announce, calculateRoute, searchNearby, isNearbySearch, startListening, watchPosition, startDetection]);
 
-  // Initialize app - fully automatic voice flow
+  // Initialize app
   useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
 
     const initializeApp = async () => {
-      // Wait for voices to load
       await new Promise(resolve => setTimeout(resolve, 800));
       
       setPhase('fetching-location');
@@ -196,13 +256,10 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
         setPhase('awaiting-destination');
         await announce('Location detected. Please tell your destination.');
         
-        // Auto-start listening after announcement
         setTimeout(() => {
-          if (sttSupported) {
-            startListening();
-          }
+          if (sttSupported) startListening();
         }, 1500);
-      } catch (e) {
+      } catch {
         setPhase('error');
         setError('Could not get location');
         await announce('Could not get your location. Please enable location services and refresh the app.');
@@ -212,14 +269,12 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
     initializeApp();
 
     return () => {
-      if (navigationIntervalRef.current) {
-        clearInterval(navigationIntervalRef.current);
-      }
+      clearWatch();
       stopDetection();
     };
-  }, [announce, getCurrentPosition, sttSupported, startListening, stopDetection]);
+  }, [announce, getCurrentPosition, sttSupported, startListening, clearWatch, stopDetection]);
 
-  // Handle transcript changes - automatic processing
+  // Handle transcript changes
   useEffect(() => {
     if (transcript && !isListening && phase === 'awaiting-destination') {
       setPhase('processing');
@@ -233,40 +288,36 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
     if (currentObstacle && phase === 'navigating') {
       const alert = getObstacleAlert(currentObstacle);
       setObstacleAlert(alert);
-      
-      // Interrupt current speech and announce obstacle
       stopSpeaking();
-      announce(alert, { rate: 1.1 }); // Slightly faster for urgency
-      
+      announce(alert, { rate: 1.1 });
       setTimeout(() => setObstacleAlert(null), 3500);
     }
   }, [currentObstacle, phase, announce, stopSpeaking]);
 
   // Actions
   const startNewTrip = useCallback(async () => {
-    if (navigationIntervalRef.current) {
-      clearInterval(navigationIntervalRef.current);
-    }
+    clearWatch();
     stopDetection();
     setCurrentRoute(null);
+    routeRef.current = null;
     setCurrentStepIndex(0);
     stepIndexRef.current = 0;
+    lastAnnouncedStepRef.current = -1;
     setError(null);
     setPhase('awaiting-destination');
     await announce('Ready for new destination. Please speak your destination.');
     setTimeout(() => startListening(), 1500);
-  }, [announce, startListening, stopDetection]);
+  }, [announce, startListening, clearWatch, stopDetection]);
 
   const stopNavigation = useCallback(() => {
-    if (navigationIntervalRef.current) {
-      clearInterval(navigationIntervalRef.current);
-    }
+    clearWatch();
     stopSpeaking();
     stopDetection();
     setPhase('awaiting-destination');
     setCurrentRoute(null);
+    routeRef.current = null;
     setStatusMessage('Navigation stopped');
-  }, [stopSpeaking, stopDetection]);
+  }, [clearWatch, stopSpeaking, stopDetection]);
 
   const toggleCamera = useCallback(async () => {
     if (isCameraActive) {
@@ -277,10 +328,10 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
   }, [isCameraActive, startDetection, stopDetection]);
 
   const repeatCurrentInstruction = useCallback(async () => {
-    if (currentRoute && currentStepIndex < currentRoute.steps.length) {
-      await announce(currentRoute.steps[currentStepIndex].instruction);
+    if (routeRef.current && currentStepIndex < routeRef.current.steps.length) {
+      await announce(routeRef.current.steps[currentStepIndex].instruction);
     }
-  }, [currentRoute, currentStepIndex, announce]);
+  }, [currentStepIndex, announce]);
 
   const state: VoiceNavigationState = {
     phase,
@@ -294,6 +345,9 @@ export function useVoiceNavigation(): [VoiceNavigationState, VoiceNavigationActi
     obstacleAlert,
     isCameraActive,
     error,
+    userLat: latitude,
+    userLng: longitude,
+    speed,
   };
 
   const actions: VoiceNavigationActions = {

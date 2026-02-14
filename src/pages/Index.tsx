@@ -6,7 +6,7 @@ import { ObstacleAlert } from '@/components/ObstacleAlert';
 import { CameraPreview } from '@/components/CameraPreview';
 import { MissionStatement } from '@/components/MissionStatement';
 import { FutureScope } from '@/components/FutureScope';
-import { useRef } from 'react';
+import { LiveMap } from '@/components/LiveMap';
 import { useObstacleDetection } from '@/hooks/useObstacleDetection';
 
 const Index = () => {
@@ -14,28 +14,16 @@ const Index = () => {
   const { videoRef } = useObstacleDetection();
   
   const {
-    phase,
-    statusMessage,
-    currentRoute,
-    currentStepIndex,
-    transcript,
-    isListening,
-    isSpeaking,
-    obstacleAlert,
-    isCameraActive,
-    error,
+    phase, statusMessage, currentRoute, currentStepIndex,
+    transcript, isListening, isSpeaking, obstacleAlert,
+    isCameraActive, error, userLat, userLng, speed,
   } = state;
 
   const {
-    startNewTrip,
-    stopNavigation,
-    startListening,
-    stopListening,
-    toggleCamera,
-    repeatCurrentInstruction,
+    startNewTrip, stopNavigation, startListening,
+    stopListening, toggleCamera, repeatCurrentInstruction,
   } = actions;
 
-  // Map phase to status display
   const getAppStatus = () => {
     switch (phase) {
       case 'init':
@@ -57,7 +45,6 @@ const Index = () => {
     }
   };
 
-  // Handle mic button click
   const handleMicClick = () => {
     if (isListening) {
       stopListening();
@@ -66,7 +53,6 @@ const Index = () => {
     }
   };
 
-  // Determine obstacle direction from alert
   const getObstacleDirection = (): 'left' | 'right' | 'center' => {
     if (!obstacleAlert) return 'center';
     if (obstacleAlert.includes('right')) return 'left';
@@ -80,12 +66,8 @@ const Index = () => {
       role="application"
       aria-label="Voice Navigation Assistant - AI-powered navigation for visually impaired users"
     >
-      {/* Obstacle Alert - highest priority */}
-      {obstacleAlert && (
-        <ObstacleAlert direction={getObstacleDirection()} />
-      )}
+      {obstacleAlert && <ObstacleAlert direction={getObstacleDirection()} />}
 
-      {/* Skip to main content for screen readers */}
       <a 
         href="#main-content" 
         className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:p-4 focus:bg-primary focus:text-primary-foreground focus:rounded-lg"
@@ -93,17 +75,13 @@ const Index = () => {
         Skip to main content
       </a>
 
-      {/* Main Content */}
-      <main 
-        id="main-content"
-        className="flex flex-col items-center gap-6 w-full max-w-md mx-auto"
-      >
-        {/* Mission Statement - Only on init/awaiting */}
+      <main id="main-content" className="flex flex-col items-center gap-6 w-full max-w-md mx-auto">
+        {/* Mission Statement - Only on idle states */}
         {(phase === 'init' || phase === 'awaiting-destination' || phase === 'error') && (
           <MissionStatement />
         )}
 
-        {/* Navigation Instruction during active navigation */}
+        {/* Active navigation */}
         {phase === 'navigating' && currentRoute && (
           <>
             <NavigationInstruction
@@ -113,7 +91,25 @@ const Index = () => {
               distance={currentRoute.steps[currentStepIndex]?.distance}
             />
 
-            {/* Camera Preview for obstacle detection */}
+            {/* Speed indicator */}
+            {speed !== null && (
+              <div className="text-sm text-muted-foreground" aria-live="polite">
+                {speed < 0.3 ? '⏸ Stationary' : `🚶 ${(speed * 3.6).toFixed(1)} km/h`}
+              </div>
+            )}
+
+            {/* Live Map - auto-opened */}
+            {userLat && userLng && (
+              <LiveMap
+                userLat={userLat}
+                userLng={userLng}
+                destLat={currentRoute.destLat}
+                destLng={currentRoute.destLng}
+                routeCoords={currentRoute.geometry?.coordinates}
+                className="w-full h-48"
+              />
+            )}
+
             <CameraPreview
               ref={videoRef}
               isActive={isCameraActive}
@@ -121,7 +117,6 @@ const Index = () => {
               className="w-full h-48"
             />
 
-            {/* Repeat instruction button */}
             <button
               onClick={repeatCurrentInstruction}
               className="px-6 py-3 bg-secondary text-secondary-foreground rounded-xl text-lg font-medium hover:bg-secondary/80 transition-colors focus:outline-none focus:ring-4 focus:ring-secondary/50"
@@ -140,41 +135,27 @@ const Index = () => {
           />
         )}
 
-        {/* Live transcript display when listening */}
+        {/* Live transcript */}
         {isListening && transcript && (
           <div 
             className="text-xl text-primary text-center p-4 bg-card rounded-xl border border-border animate-fade-in w-full"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
+            role="status" aria-live="polite" aria-atomic="true"
           >
             <span className="sr-only">You said: </span>
             "{transcript}"
           </div>
         )}
 
-        {/* Voice Button - Primary Interaction */}
+        {/* Voice Button */}
         {(phase === 'awaiting-destination' || phase === 'arrived' || phase === 'error') && (
           <div className="flex flex-col items-center gap-4">
-            <VoiceButton
-              isListening={isListening}
-              onClick={handleMicClick}
-              disabled={isSpeaking}
-            />
-            <p 
-              className="text-muted-foreground text-center"
-              aria-live="polite"
-            >
-              {isListening 
-                ? 'Listening... Speak your destination now' 
-                : isSpeaking 
-                  ? 'Please wait...' 
-                  : 'Tap to speak destination'}
+            <VoiceButton isListening={isListening} onClick={handleMicClick} disabled={isSpeaking} />
+            <p className="text-muted-foreground text-center" aria-live="polite">
+              {isListening ? 'Listening... Speak your destination now' : isSpeaking ? 'Please wait...' : 'Tap to speak destination'}
             </p>
           </div>
         )}
 
-        {/* Arrived state with restart option */}
         {phase === 'arrived' && (
           <button
             onClick={startNewTrip}
@@ -185,7 +166,6 @@ const Index = () => {
           </button>
         )}
 
-        {/* Stop navigation button */}
         {phase === 'navigating' && (
           <button
             onClick={stopNavigation}
@@ -196,19 +176,17 @@ const Index = () => {
           </button>
         )}
 
-        {/* Future Scope - Show on idle states */}
         {(phase === 'awaiting-destination' || phase === 'arrived') && (
           <FutureScope className="mt-4" />
         )}
       </main>
 
-      {/* Footer */}
       <footer 
         className="fixed bottom-0 left-0 right-0 p-4 text-center text-sm text-muted-foreground bg-background/80 backdrop-blur-sm border-t border-border"
         role="contentinfo"
       >
         <p>Voice Navigation Assistant • AI-Powered Accessibility</p>
-        <p className="text-xs mt-1">Prototype for Academic Evaluation</p>
+        <p className="text-xs mt-1">Real-time adaptive navigation for visually impaired users</p>
       </footer>
     </div>
   );
