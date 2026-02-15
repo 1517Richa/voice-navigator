@@ -106,7 +106,7 @@ const Index = () => {
                 destLat={currentRoute.destLat}
                 destLng={currentRoute.destLng}
                 routeCoords={currentRoute.geometry?.coordinates}
-                className="w-full h-48"
+                className="w-full h-80"
               />
             )}
 
