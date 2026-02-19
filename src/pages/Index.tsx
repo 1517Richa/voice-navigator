@@ -1,14 +1,15 @@
 import { useVoiceNavigation } from '@/hooks/useVoiceNavigation';
 import { VoiceButton } from '@/components/VoiceButton';
 import { StatusDisplay } from '@/components/StatusDisplay';
-import { NavigationInstruction } from '@/components/NavigationInstruction';
 import { ObstacleAlert } from '@/components/ObstacleAlert';
 import { CameraPreview } from '@/components/CameraPreview';
 import { MissionStatement } from '@/components/MissionStatement';
 import { FutureScope } from '@/components/FutureScope';
 import { LiveMap } from '@/components/LiveMap';
 import { WalkingStatsPanel } from '@/components/WalkingStatsPanel';
+import { WalkingNavPanel } from '@/components/WalkingNavPanel';
 import { useObstacleDetection } from '@/hooks/useObstacleDetection';
+import { haversineDistance } from '@/hooks/useGeolocation';
 
 const Index = () => {
   const [state, actions] = useVoiceNavigation();
@@ -83,53 +84,62 @@ const Index = () => {
         )}
 
         {/* Active navigation */}
-        {phase === 'navigating' && currentRoute && (
-          <>
-            <NavigationInstruction
-              instruction={currentRoute.steps[currentStepIndex]?.instruction || ''}
-              stepNumber={currentStepIndex + 1}
-              totalSteps={currentRoute.steps.length}
-              distance={currentRoute.steps[currentStepIndex]?.distance}
-            />
+        {phase === 'navigating' && currentRoute && (() => {
+          const currentStep = currentRoute.steps[currentStepIndex];
+          const nextStep = currentRoute.steps[currentStepIndex + 1] ?? null;
 
-            {/* Walking Stats Panel — ETA, remaining distance, speed */}
-            <WalkingStatsPanel
-              totalDistance={currentRoute.totalDistance}
-              totalDuration={currentRoute.totalDuration}
-              currentStepIndex={currentStepIndex}
-              totalSteps={currentRoute.steps.length}
-              steps={currentRoute.steps}
-              speed={speed}
-            />
+          // Real-time distance to current step's endpoint (GPS → waypoint)
+          const distanceToNext =
+            userLat && userLng && currentStep?.endLocation
+              ? haversineDistance(
+                  userLat, userLng,
+                  currentStep.endLocation.lat, currentStep.endLocation.lng
+                )
+              : null;
 
-            {/* Live Map - auto-opened */}
-            {userLat && userLng && (
-              <LiveMap
-                userLat={userLat}
-                userLng={userLng}
-                destLat={currentRoute.destLat}
-                destLng={currentRoute.destLng}
-                routeCoords={currentRoute.geometry?.coordinates}
-                className="w-full h-80"
+          return (
+            <>
+              {/* Walking Nav Panel — turn icons, voice cue, next step preview */}
+              <WalkingNavPanel
+                currentStep={currentStep}
+                nextStep={nextStep}
+                stepIndex={currentStepIndex}
+                totalSteps={currentRoute.steps.length}
+                distanceToNext={distanceToNext}
+                onRepeat={repeatCurrentInstruction}
               />
-            )}
 
-            <CameraPreview
-              ref={videoRef}
-              isActive={isCameraActive}
-              onToggle={toggleCamera}
-              className="w-full h-48"
-            />
+              {/* Walking Stats Panel — ETA, remaining, speed */}
+              <WalkingStatsPanel
+                totalDistance={currentRoute.totalDistance}
+                totalDuration={currentRoute.totalDuration}
+                currentStepIndex={currentStepIndex}
+                totalSteps={currentRoute.steps.length}
+                steps={currentRoute.steps}
+                speed={speed}
+              />
 
-            <button
-              onClick={repeatCurrentInstruction}
-              className="px-6 py-3 bg-secondary text-secondary-foreground rounded-xl text-lg font-medium hover:bg-secondary/80 transition-colors focus:outline-none focus:ring-4 focus:ring-secondary/50"
-              aria-label="Repeat current navigation instruction"
-            >
-              Repeat Instruction
-            </button>
-          </>
-        )}
+              {/* Live Map */}
+              {userLat && userLng && (
+                <LiveMap
+                  userLat={userLat}
+                  userLng={userLng}
+                  destLat={currentRoute.destLat}
+                  destLng={currentRoute.destLng}
+                  routeCoords={currentRoute.geometry?.coordinates}
+                  className="w-full h-80"
+                />
+              )}
+
+              <CameraPreview
+                ref={videoRef}
+                isActive={isCameraActive}
+                onToggle={toggleCamera}
+                className="w-full h-48"
+              />
+            </>
+          );
+        })()}
 
         {/* Status Display */}
         {phase !== 'navigating' && (
