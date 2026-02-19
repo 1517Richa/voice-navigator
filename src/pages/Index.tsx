@@ -106,6 +106,7 @@ const Index = () => {
                 stepIndex={currentStepIndex}
                 totalSteps={currentRoute.steps.length}
                 distanceToNext={distanceToNext}
+                speed={speed}
                 onRepeat={repeatCurrentInstruction}
               />
 
