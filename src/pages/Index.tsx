@@ -7,6 +7,7 @@ import { CameraPreview } from '@/components/CameraPreview';
 import { MissionStatement } from '@/components/MissionStatement';
 import { FutureScope } from '@/components/FutureScope';
 import { LiveMap } from '@/components/LiveMap';
+import { WalkingStatsPanel } from '@/components/WalkingStatsPanel';
 import { useObstacleDetection } from '@/hooks/useObstacleDetection';
 
 const Index = () => {
@@ -91,12 +92,15 @@ const Index = () => {
               distance={currentRoute.steps[currentStepIndex]?.distance}
             />
 
-            {/* Speed indicator */}
-            {speed !== null && (
-              <div className="text-sm text-muted-foreground" aria-live="polite">
-                {speed < 0.3 ? '⏸ Stationary' : `🚶 ${(speed * 3.6).toFixed(1)} km/h`}
-              </div>
-            )}
+            {/* Walking Stats Panel — ETA, remaining distance, speed */}
+            <WalkingStatsPanel
+              totalDistance={currentRoute.totalDistance}
+              totalDuration={currentRoute.totalDuration}
+              currentStepIndex={currentStepIndex}
+              totalSteps={currentRoute.steps.length}
+              steps={currentRoute.steps}
+              speed={speed}
+            />
 
             {/* Live Map - auto-opened */}
             {userLat && userLng && (
