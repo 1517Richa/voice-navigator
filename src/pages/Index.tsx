@@ -8,6 +8,7 @@ import { FutureScope } from '@/components/FutureScope';
 import { LiveMap } from '@/components/LiveMap';
 import { WalkingStatsPanel } from '@/components/WalkingStatsPanel';
 import { WalkingNavPanel } from '@/components/WalkingNavPanel';
+import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { useObstacleDetection } from '@/hooks/useObstacleDetection';
 import { haversineDistance } from '@/hooks/useGeolocation';
 
@@ -88,18 +89,38 @@ const Index = () => {
           const currentStep = currentRoute.steps[currentStepIndex];
           const nextStep = currentRoute.steps[currentStepIndex + 1] ?? null;
 
-          // Real-time distance to current step's endpoint (GPS → waypoint)
           const distanceToNext =
             userLat && userLng && currentStep?.endLocation
-              ? haversineDistance(
-                  userLat, userLng,
-                  currentStep.endLocation.lat, currentStep.endLocation.lng
-                )
+              ? haversineDistance(userLat, userLng, currentStep.endLocation.lat, currentStep.endLocation.lng)
               : null;
+
+          // Remaining distance: sum of remaining steps
+          const remainingDist = currentRoute.steps
+            .slice(currentStepIndex)
+            .reduce((sum, s) => sum + (s.distance ?? 0), 0);
+
+          const effectiveSpeed = speed && speed > 0.3 ? speed : 1.39;
+          const etaSeconds = remainingDist > 0 ? remainingDist / effectiveSpeed : null;
+
+          const speakDiagnostics = () => {
+            const parts: string[] = [];
+            if (speed !== null) parts.push(`Current speed: ${(speed * 3.6).toFixed(1)} kilometers per hour.`);
+            if (distanceToNext !== null) parts.push(`Distance to next turn: ${distanceToNext >= 1000 ? `${(distanceToNext / 1000).toFixed(1)} kilometers` : `${Math.round(distanceToNext)} meters`}.`);
+            if (etaSeconds !== null) {
+              const mins = Math.floor(etaSeconds / 60);
+              parts.push(`Estimated arrival in ${mins > 0 ? `${mins} minutes` : `${Math.round(etaSeconds)} seconds`}.`);
+            }
+            if (parts.length > 0) {
+              const msg = parts.join(' ');
+              window.speechSynthesis?.cancel();
+              const utter = new SpeechSynthesisUtterance(msg);
+              utter.rate = 0.9;
+              window.speechSynthesis?.speak(utter);
+            }
+          };
 
           return (
             <>
-              {/* Walking Nav Panel — turn icons, voice cue, next step preview */}
               <WalkingNavPanel
                 currentStep={currentStep}
                 nextStep={nextStep}
@@ -110,7 +131,14 @@ const Index = () => {
                 onRepeat={repeatCurrentInstruction}
               />
 
-              {/* Walking Stats Panel — ETA, remaining, speed */}
+              <DiagnosticsPanel
+                speed={speed}
+                distanceToNext={distanceToNext}
+                totalDistanceRemaining={remainingDist}
+                etaSeconds={etaSeconds}
+                onSpeakDiagnostics={speakDiagnostics}
+              />
+
               <WalkingStatsPanel
                 totalDistance={currentRoute.totalDistance}
                 totalDuration={currentRoute.totalDuration}
@@ -120,7 +148,6 @@ const Index = () => {
                 speed={speed}
               />
 
-              {/* Live Map */}
               {userLat && userLng && (
                 <LiveMap
                   userLat={userLat}
